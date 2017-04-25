@@ -521,7 +521,7 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	/* input device settings */
 	idev = pdev->input;
 	pad->idev = idev;
-	idev->name = "PSX(PS1/2) pad";
+	idev->name = "PSX (PS1/2) pad";
 	snprintf(pad->phys, PSXPAD_DEFAULT_INPUT_PHYSIZE, "%s/input", dev_name(&spi->dev));
 	idev->id.bustype = BUS_SPI;
 	idev->dev.parent = &spi->dev;
@@ -667,5 +667,5 @@ static struct spi_driver psxpad_spi_driver = {
 module_spi_driver(psxpad_spi_driver);
 
 MODULE_AUTHOR("AZO <typesylph@gmail.com>");
-MODULE_DESCRIPTION("PSX(Play Station 1/2) pad with SPI Bus Driver");
+MODULE_DESCRIPTION("PSX (Play Station 1/2) pad with SPI Bus Driver");
 MODULE_LICENSE("GPL");
