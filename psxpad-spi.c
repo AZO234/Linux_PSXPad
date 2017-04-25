@@ -1,5 +1,5 @@
 /*
- * PSX(Play Station 1/2) pad (SPI Interface)
+ * PSX (Play Station 1/2) pad (SPI Interface)
  *
  * Copyright (C) 2017 AZO <typesylph@gmail.com>
  * Licensed under the GPL-2 or later.
@@ -20,6 +20,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/device.h>
 #include <linux/input.h>
 #include <linux/input-polldev.h>
 #include <linux/module.h>
@@ -29,7 +30,9 @@
 #include <linux/pm_runtime.h>
 
 //#define PSXPAD_ENABLE_ANALOG2
+#ifdef CONFIG_JOYSTICK_PSXPAD_SPI_FF
 #define PSXPAD_ENABLE_FF
+#endif	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
 
 enum {
 	PSXPAD_SPI_SPEED_125KHZ = 0,
@@ -51,16 +54,12 @@ enum {
 enum {
 	PSXPAD_KEYSTATE_TYPE_DIGITAL = 0,
 	PSXPAD_KEYSTATE_TYPE_ANALOG1,
-#ifdef PSXPAD_ENABLE_ANALOG2
 	PSXPAD_KEYSTATE_TYPE_ANALOG2,
-#endif	/* PSXPAD_ENABLE_ANALOG2 */
 	PSXPAD_KEYSTATE_TYPE_UNKNOWN
 };
 
-#ifdef PSXPAD_ENABLE_ANALOG2
 static const u8 PSX_CMD_INIT_PRESSURE[]	= {0x01, 0x40, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00};
 static const u8 PSX_CMD_ALL_PRESSURE[]	= {0x01, 0x4F, 0x00, 0xFF, 0xFF, 0x03, 0x00, 0x00, 0x00};
-#endif	/* PSXPAD_ENABLE_ANALOG2 */
 static const u8 PSX_CMD_POLL[]		= {0x01, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 static const u8 PSX_CMD_ENTER_CFG[]	= {0x01, 0x43, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00};
 static const u8 PSX_CMD_EXIT_CFG[]	= {0x01, 0x43, 0x00, 0x00, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A};
@@ -143,15 +142,6 @@ static void psxpad_command(struct psxpad *pad, const u8 sendcmd[], u8 response[]
 	u8 loc;
 	u8 sendbuf[0x40];
 
-	if (!pad)
-		return;
-	if (!sendcmd)
-		return;
-	if (!response)
-		return;
-	if (sendcmdlen == 0)
-		return;
-
 	xfers = kzalloc(sizeof(struct spi_transfer), GFP_KERNEL);
 	if (!xfers)
 		return;
@@ -177,8 +167,7 @@ static void psxpad_command(struct psxpad *pad, const u8 sendcmd[], u8 response[]
 		xfers->speed_hz = 125000;
 		break;
 	}
-	spi_message_add_tail(xfers, &msg);
-	spi_sync(pad->spi, &msg);
+	spi_sync_transfer(pad->spi, xfers, 1);
 	kfree(xfers);
 
 	for (loc = 0; loc < sendcmdlen; loc++)
@@ -187,9 +176,6 @@ static void psxpad_command(struct psxpad *pad, const u8 sendcmd[], u8 response[]
 
 static void psxpad_setadmode(struct psxpad *pad, const bool analog_mode, const bool mode_lock)
 {
-	if (!pad)
-		return;
-
 	pad->analog_mode	= analog_mode;
 	pad->mode_lock	= mode_lock;
 
@@ -208,9 +194,6 @@ static void psxpad_setadmode(struct psxpad *pad, const bool analog_mode, const b
 #ifdef PSXPAD_ENABLE_FF
 static void psxpad_setenablemotor(struct psxpad *pad, const bool motor1enable, const bool motor2enable)
 {
-	if (!pad)
-		return;
-
 	pad->motor1enable = motor1enable;
 	pad->motor2enable = motor2enable;
 
@@ -224,24 +207,20 @@ static void psxpad_setenablemotor(struct psxpad *pad, const bool motor1enable, c
 
 static void psxpad_setmotorlevel(struct psxpad *pad, const u8 motor1level, const u8 motor2level)
 {
-	if (!pad)
-		return;
-
 	pad->motor1level = motor1level ? 0xFF : 0x00;
 	pad->motor2level = motor2level;
 
 	pad->poolcmd[3] = pad->motor1level;
 	pad->poolcmd[4] = pad->motor2level;
 }
+#else	/* PSXPAD_ENABLE_FF */
+static void psxpad_setenablemotor(struct psxpad *pad, const bool motor1enable, const bool motor2enable) { }
+
+static void psxpad_setmotorlevel(struct psxpad *pad, const u8 motor1level, const u8 motor2level) { }
 #endif	/* PSXPAD_ENABLE_FF */
 
 static void psxpad_getkeystate(struct psxpad *pad, struct psxpad_keystate *keystate)
 {
-	if (!pad)
-		return;
-	if (!keystate)
-		return;
-
 	keystate->type = PSXPAD_KEYSTATE_TYPE_UNKNOWN;
 #ifdef PSXPAD_ENABLE_ANALOG2
 	keystate->a_right	= 0;
@@ -345,25 +324,23 @@ static void psxpad_spi_poll(struct input_polled_dev *pdev)
 
 	psxpad_command(pad, pad->poolcmd, pad->response, sizeof(PSX_CMD_POLL));
 	psxpad_getkeystate(pad, &keystate);
-#ifdef PSXPAD_ENABLE_FF
 	psxpad_setenablemotor(pad, true, true);
-#endif	/* PSXPAD_ENABLE_FF */
 
 	switch (keystate.type) {
 #ifdef PSXPAD_ENABLE_ANALOG2
 	case PSXPAD_KEYSTATE_TYPE_ANALOG2:
-		input_report_abs(pad->idev, ABS_PRESSURE,	keystate.a_up);
-		input_report_abs(pad->idev, ABS_PRESSURE +  1,	keystate.a_down);
-		input_report_abs(pad->idev, ABS_PRESSURE +  2,	keystate.a_left);
-		input_report_abs(pad->idev, ABS_PRESSURE +  3,	keystate.a_right);
-		input_report_abs(pad->idev, ABS_PRESSURE +  4,	keystate.a_triangle);
-		input_report_abs(pad->idev, ABS_PRESSURE +  5,	keystate.a_circle);
-		input_report_abs(pad->idev, ABS_PRESSURE +  6,	keystate.a_cross);
-		input_report_abs(pad->idev, ABS_PRESSURE +  7,	keystate.a_square);
-		input_report_abs(pad->idev, ABS_PRESSURE +  8,	keystate.a_l1);
-		input_report_abs(pad->idev, ABS_PRESSURE +  9,	keystate.a_r1);
-		input_report_abs(pad->idev, ABS_PRESSURE + 10,	keystate.a_l2);
-		input_report_abs(pad->idev, ABS_PRESSURE + 11,	keystate.a_r2);
+		input_report_abs(pad->idev, ABS_HAT0Y,		keystate.a_up);
+		input_report_abs(pad->idev, ABS_HAT1Y,		keystate.a_down);
+		input_report_abs(pad->idev, ABS_HAT0X,		keystate.a_left);
+		input_report_abs(pad->idev, ABS_HAT1X,		keystate.a_right);
+		input_report_abs(pad->idev, ABS_MISC,		keystate.a_triangle);
+		input_report_abs(pad->idev, ABS_PRESSURE,	keystate.a_circle);
+		input_report_abs(pad->idev, ABS_BRAKE,		keystate.a_cross);
+		input_report_abs(pad->idev, ABS_THROTTLE,	keystate.a_square);
+		input_report_abs(pad->idev, ABS_HAT2X,		keystate.a_l1);
+		input_report_abs(pad->idev, ABS_HAT3X,		keystate.a_r1);
+		input_report_abs(pad->idev, ABS_HAT2Y,		keystate.a_l2);
+		input_report_abs(pad->idev, ABS_HAT3Y,		keystate.a_r2);
 		input_report_abs(pad->idev, ABS_X,		keystate.lx);
 		input_report_abs(pad->idev, ABS_Y,		keystate.ly);
 		input_report_abs(pad->idev, ABS_RX,		keystate.rx);
@@ -388,18 +365,20 @@ static void psxpad_spi_poll(struct input_polled_dev *pdev)
 #endif	/* PSXPAD_ENABLE_ANALOG2 */
 
 	case PSXPAD_KEYSTATE_TYPE_ANALOG1:
+#ifdef PSXPAD_ENABLE_ANALOG2
+		input_report_abs(pad->idev, ABS_HAT0Y,		0);
+		input_report_abs(pad->idev, ABS_HAT1Y,		0);
+		input_report_abs(pad->idev, ABS_HAT0X,		0);
+		input_report_abs(pad->idev, ABS_HAT1X,		0);
+		input_report_abs(pad->idev, ABS_MISC,		0);
 		input_report_abs(pad->idev, ABS_PRESSURE,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  1,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  2,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  3,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  4,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  5,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  6,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  7,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  8,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  9,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE + 10,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE + 11,	0);
+		input_report_abs(pad->idev, ABS_BRAKE,		0);
+		input_report_abs(pad->idev, ABS_THROTTLE,	0);
+		input_report_abs(pad->idev, ABS_HAT2X,		0);
+		input_report_abs(pad->idev, ABS_HAT3X,		0);
+		input_report_abs(pad->idev, ABS_HAT2Y,		0);
+		input_report_abs(pad->idev, ABS_HAT3Y,		0);
+#endif	/* PSXPAD_ENABLE_ANALOG2 */
 		input_report_abs(pad->idev, ABS_X,		keystate.lx);
 		input_report_abs(pad->idev, ABS_Y,		keystate.ly);
 		input_report_abs(pad->idev, ABS_RX,		keystate.rx);
@@ -423,18 +402,20 @@ static void psxpad_spi_poll(struct input_polled_dev *pdev)
 		break;
 
 	case PSXPAD_KEYSTATE_TYPE_DIGITAL:
+#ifdef PSXPAD_ENABLE_ANALOG2
+		input_report_abs(pad->idev, ABS_HAT0Y,		0);
+		input_report_abs(pad->idev, ABS_HAT1Y,		0);
+		input_report_abs(pad->idev, ABS_HAT0X,		0);
+		input_report_abs(pad->idev, ABS_HAT1X,		0);
+		input_report_abs(pad->idev, ABS_MISC,		0);
 		input_report_abs(pad->idev, ABS_PRESSURE,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  1,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  2,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  3,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  4,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  5,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  6,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  7,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  8,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE +  9,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE + 10,	0);
-		input_report_abs(pad->idev, ABS_PRESSURE + 11,	0);
+		input_report_abs(pad->idev, ABS_BRAKE,		0);
+		input_report_abs(pad->idev, ABS_THROTTLE,	0);
+		input_report_abs(pad->idev, ABS_HAT2X,		0);
+		input_report_abs(pad->idev, ABS_HAT3X,		0);
+		input_report_abs(pad->idev, ABS_HAT2Y,		0);
+		input_report_abs(pad->idev, ABS_HAT3Y,		0);
+#endif	/* PSXPAD_ENABLE_ANALOG2 */
 		input_report_abs(pad->idev, ABS_X,		0x80);
 		input_report_abs(pad->idev, ABS_Y,		0x80);
 		input_report_abs(pad->idev, ABS_RX,		0x80);
@@ -474,6 +455,32 @@ static int psxpad_spi_ff(struct input_dev *idev, void *data, struct ff_effect *e
 
 	return 0;
 }
+
+static int psxpad_spi_init_ff(struct psxpad *pad)
+{
+	int err;
+
+	input_set_capability(pad->idev, EV_FF, FF_RUMBLE);
+	err = input_ff_create_memless(pad->idev, NULL, psxpad_spi_ff);
+	if (err) {
+		pr_err("psxpad-spi: ff alloc failed!!\n");
+		err = -ENOMEM;
+	}
+
+	return err;
+}
+
+static void psxpad_spi_deinit_ff(struct psxpad *pad)
+{
+	input_ff_destroy(pad->idev);
+}
+#else	/* PSXPAD_ENABLE_FF */
+static inline int psxpad_spi_init_ff(struct psxpad *pad)
+{
+	return 0;
+}
+
+static void psxpad_spi_deinit_ff(struct psxpad *pad) { }
 #endif	/* PSXPAD_ENABLE_FF */
 
 static int psxpad_spi_probe(struct spi_device *spi)
@@ -483,7 +490,7 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	struct input_dev *idev;
 	int err, i;
 
-	pad = kzalloc(sizeof(struct psxpad), GFP_KERNEL);
+	pad = devm_kzalloc(&spi->dev, sizeof(struct psxpad), GFP_KERNEL);
 	pdev = input_allocate_polled_device();
 	if (!pad || !pdev) {
 		pr_err("psxpad-spi: alloc failed!!\n");
@@ -527,18 +534,18 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	input_set_abs_params(idev, ABS_RX,		0, 255, 0, 0);
 	input_set_abs_params(idev, ABS_RY,		0, 255, 0, 0);
 #ifdef PSXPAD_ENABLE_ANALOG2
-	input_set_abs_params(idev, ABS_PRESSURE,	0, 255, 0, 0);	/* up */
-	input_set_abs_params(idev, ABS_PRESSURE +  1,	0, 255, 0, 0);	/* down */
-	input_set_abs_params(idev, ABS_PRESSURE +  2,	0, 255, 0, 0);	/* left */
-	input_set_abs_params(idev, ABS_PRESSURE +  3,	0, 255, 0, 0);	/* right */
-	input_set_abs_params(idev, ABS_PRESSURE +  4,	0, 255, 0, 0);
-	input_set_abs_params(idev, ABS_PRESSURE +  5,	0, 255, 0, 0);
-	input_set_abs_params(idev, ABS_PRESSURE +  6,	0, 255, 0, 0);
-	input_set_abs_params(idev, ABS_PRESSURE +  7,	0, 255, 0, 0);
-	input_set_abs_params(idev, ABS_PRESSURE +  8,	0, 255, 0, 0);	/* L1 */
-	input_set_abs_params(idev, ABS_PRESSURE +  9,	0, 255, 0, 0);	/* R1 */
-	input_set_abs_params(idev, ABS_PRESSURE + 10,	0, 255, 0, 0);	/* L2 */
-	input_set_abs_params(idev, ABS_PRESSURE + 11,	0, 255, 0, 0);	/* R2 */
+	input_set_abs_params(idev, ABS_HAT0Y,		0, 255, 0, 0);	/* up */
+	input_set_abs_params(idev, ABS_HAT1Y,		0, 255, 0, 0);	/* down */
+	input_set_abs_params(idev, ABS_HAT0X,		0, 255, 0, 0);	/* left */
+	input_set_abs_params(idev, ABS_HAT1X,		0, 255, 0, 0);	/* right */
+	input_set_abs_params(idev, ABS_MISC,		0, 255, 0, 0);
+	input_set_abs_params(idev, ABS_PRESSURE,	0, 255, 0, 0);
+	input_set_abs_params(idev, ABS_BRAKE,		0, 255, 0, 0);
+	input_set_abs_params(idev, ABS_THROTTLE,	0, 255, 0, 0);
+	input_set_abs_params(idev, ABS_HAT2X,		0, 255, 0, 0);	/* L1 */
+	input_set_abs_params(idev, ABS_HAT3X,		0, 255, 0, 0);	/* R1 */
+	input_set_abs_params(idev, ABS_HAT2Y,		0, 255, 0, 0);	/* L2 */
+	input_set_abs_params(idev, ABS_HAT3Y,		0, 255, 0, 0);	/* R2 */
 #endif	/* PSXPAD_ENABLE_ANALOG2 */
 	__set_bit(EV_KEY, idev->evbit);
 	__set_bit(BTN_DPAD_UP,		idev->keybit);
@@ -558,16 +565,12 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	__set_bit(BTN_SELECT,		idev->keybit);
 	__set_bit(BTN_START,		idev->keybit);
 
-#ifdef PSXPAD_ENABLE_FF
 	/* force feedback */
-	input_set_capability(idev, EV_FF, FF_RUMBLE);
-	err = input_ff_create_memless(idev, NULL, psxpad_spi_ff);
+	err = psxpad_spi_init_ff(pad);
 	if (err) {
-		pr_err("psxpad-spi: ff alloc failed!!\n");
 		err = -ENOMEM;
 		goto err_free_mem;
 	}
-#endif	/* PSXPAD_ENABLE_FF */
 
 	/* SPI settings */
 	spi->mode = SPI_MODE_3;
@@ -575,9 +578,7 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	spi_setup(spi);
 
 	/* pad settings */
-#ifdef PSXPAD_ENABLE_FF
 	psxpad_setmotorlevel(pad, 0, 0);
-#endif	/* PSXPAD_ENABLE_FF */
 
 	/* register input pool device */
 	err = input_register_polled_device(pdev);
@@ -593,13 +594,10 @@ static int psxpad_spi_probe(struct spi_device *spi)
 
  err_free_mem:
 	if (pdev) {
-#ifdef PSXPAD_ENABLE_FF
-		if (pdev->input->ff)
-			input_ff_destroy(pdev->input);
-#endif	/* PSXPAD_ENABLE_FF */
+		psxpad_spi_deinit_ff(pad);
 		input_free_polled_device(pdev);
 	}
-	kfree(pad);
+	devm_kfree(&spi->dev, pad);
 
 	return err;
 }
@@ -609,11 +607,9 @@ static int psxpad_spi_remove(struct spi_device *spi)
 {
 	struct psxpad *pad = spi_get_drvdata(spi);
 
-#ifdef PSXPAD_ENABLE_FF
-	input_ff_destroy(pad->idev);
-#endif	/* PSXPAD_ENABLE_FF */
+	psxpad_spi_deinit_ff(pad);
 	input_free_polled_device(pad->pdev);
-	kfree(pad);
+	devm_kfree(&spi->dev, pad);
 
 	return 0;
 }
@@ -631,10 +627,8 @@ static int __maybe_unused psxpad_spi_suspend(struct device *dev)
 	pad->sus_motor2level = pad->motor2level;
 
 	psxpad_setadmode(pad, false, false);
-#ifdef PSXPAD_ENABLE_FF
 	psxpad_setmotorlevel(pad, 0, 0);
 	psxpad_setenablemotor(pad, false, false);
-#endif	/* PSXPAD_ENABLE_FF */
 
 	return 0;
 }
@@ -646,10 +640,8 @@ static int __maybe_unused psxpad_spi_resume(struct device *dev)
 
 	spi->mode = SPI_MODE_3;
 	psxpad_setadmode(pad, pad->sus_analog_mode, pad->sus_mode_lock);
-#ifdef PSXPAD_ENABLE_FF
 	psxpad_setmotorlevel(pad, pad->sus_motor1enable, pad->sus_motor2enable);
 	psxpad_setenablemotor(pad, pad->sus_motor1level, pad->sus_motor2level);
-#endif	/* PSXPAD_ENABLE_FF */
 
 	return 0;
 }
