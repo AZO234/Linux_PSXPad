@@ -1,7 +1,7 @@
 /*
  * PSX (Play Station 1/2) pad (SPI Interface)
  *
- * Copyright (C) 2017 AZO <typesylph@gmail.com>
+ * Copyright (C) 2017 Tomohiro Yoshidomi <sylph23k@gmail.com>
  * Licensed under the GPL-2 or later.
  *
  * PSX pad plug (not socket)
@@ -31,20 +31,7 @@
 
 //#define PSXPAD_ENABLE_ANALOG2
 
-#define PSXPAD_DEFAULT_SPI_DELAY	100
-#define PSXPAD_DEFAULT_INTERVAL		16
-#define PSXPAD_DEFAULT_INTERVAL_MIN	8
-#define PSXPAD_DEFAULT_INTERVAL_MAX	32
-#define PSXPAD_DEFAULT_INPUT_PHYSIZE	32
-
 #define REVERSE_BIT(x) ((((x) & 0x80) >> 7) | (((x) & 0x40) >> 5) | (((x) & 0x20) >> 3) | (((x) & 0x10) >> 1) | (((x) & 0x08) << 1) | (((x) & 0x04) << 3) | (((x) & 0x02) << 5) | (((x) & 0x01) << 7))
-
-enum {
-	PSXPAD_KEYSTATE_TYPE_DIGITAL = 0,
-	PSXPAD_KEYSTATE_TYPE_ANALOG1,
-	PSXPAD_KEYSTATE_TYPE_ANALOG2,
-	PSXPAD_KEYSTATE_TYPE_UNKNOWN
-};
 
 static const u8 PSX_CMD_INIT_PRESSURE[]	= {0x01, 0x40, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00};
 static const u8 PSX_CMD_ALL_PRESSURE[]	= {0x01, 0x4F, 0x00, 0xFF, 0xFF, 0x03, 0x00, 0x00, 0x00};
@@ -58,25 +45,14 @@ struct psxpad {
 	struct spi_device *spi;
 	struct input_polled_dev *pdev;
 	struct input_dev *idev;
-	char phys[PSXPAD_DEFAULT_INPUT_PHYSIZE];
-	u16 spi_delay;
+	char phys[0x20];
 	bool analog_mode;
 	bool mode_lock;
 	bool motor1enable;
 	bool motor2enable;
 	u8 motor1level;
 	u8 motor2level;
-
-	/* for suspend/resume */
-	bool sus_analog_mode;
-	bool sus_mode_lock;
-	bool sus_motor1enable;
-	bool sus_motor2enable;
-	u8 sus_motor1level;
-	u8 sus_motor2level;
-
-	u8 spi_speed;
-	u8 poolcmd[sizeof(PSX_CMD_POLL)];
+	u8 pollcmd[sizeof(PSX_CMD_POLL)];
 	u8 enablemotor[sizeof(PSX_CMD_ENABLE_MOTOR)];
 	u8 admode[sizeof(PSX_CMD_AD_MODE)];
 	u8 sendbuf[0x20] ____cacheline_aligned;
@@ -89,7 +65,6 @@ static int psxpad_command(struct psxpad *pad, const u8 sendcmd[], u8 response[],
 		.tx_buf		= pad->sendbuf,
 		.rx_buf		= response,
 		.len		= sendcmdlen,
-		.delay_usecs	= pad->spi_delay,
 	};
 	struct spi_message msg;
 	int err;
@@ -188,8 +163,8 @@ static void psxpad_setmotorlevel(struct psxpad *pad, const u8 motor1level, const
 	pad->motor1level = motor1level ? 0xFF : 0x00;
 	pad->motor2level = motor2level;
 
-	pad->poolcmd[3] = pad->motor1level;
-	pad->poolcmd[4] = pad->motor2level;
+	pad->pollcmd[3] = pad->motor1level;
+	pad->pollcmd[4] = pad->motor2level;
 }
 #else	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
 static void psxpad_setenablemotor(struct psxpad *pad, const bool motor1enable, const bool motor2enable) { }
@@ -216,7 +191,7 @@ static void psxpad_spi_poll(struct input_polled_dev *pdev)
 	struct psxpad *pad = pdev->private;
 	int err;
 
-	err = psxpad_command(pad, pad->poolcmd, pad->response, sizeof(PSX_CMD_POLL));
+	err = psxpad_command(pad, pad->pollcmd, pad->response, sizeof(PSX_CMD_POLL));
 	if (err) {
 		dev_err(&pad->idev->dev, "psxpad-spi: poll: poll cmd failed!!\n");
 		return;
@@ -366,18 +341,11 @@ static int psxpad_spi_init_ff(struct psxpad *pad)
 
 	return err;
 }
-
-static void psxpad_spi_deinit_ff(struct psxpad *pad)
-{
-	input_ff_destroy(pad->idev);
-}
 #else	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
 static inline int psxpad_spi_init_ff(struct psxpad *pad)
 {
 	return 0;
 }
-
-static void psxpad_spi_deinit_ff(struct psxpad *pad) { }
 #endif	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
 
 static int psxpad_spi_probe(struct spi_device *spi)
@@ -390,32 +358,32 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	pad = devm_kzalloc(&spi->dev, sizeof(struct psxpad), GFP_KERNEL);
 	if (!pad) {
 		err = -ENOMEM;
-		goto err_free_mem;
+		goto err_free_mem1;
 	}
 	pdev = input_allocate_polled_device();
 	if (!pdev) {
 		dev_err(&spi->dev, "psxpad-spi: probe: pdev alloc failed!!\n");
 		err = -ENOMEM;
-		goto err_free_mem;
+		goto err_free_mem1;
 	}
 	for (i = 0; i < sizeof(PSX_CMD_POLL); i++)
-		pad->poolcmd[i] = PSX_CMD_POLL[i];
+		pad->pollcmd[i] = PSX_CMD_POLL[i];
 	for (i = 0; i < sizeof(PSX_CMD_ENABLE_MOTOR); i++)
 		pad->enablemotor[i] = PSX_CMD_ENABLE_MOTOR[i];
 	for (i = 0; i < sizeof(PSX_CMD_AD_MODE); i++)
 		pad->admode[i] = PSX_CMD_AD_MODE[i];
-	pad->spi_delay = PSXPAD_DEFAULT_SPI_DELAY;
 
-	/* input pool device settings */
+	/* input poll device settings */
 	pad->pdev = pdev;
 	pad->spi = spi;
 	pdev->private = pad;
 	pdev->open = psxpad_spi_poll_open;
 	pdev->close = psxpad_spi_poll_close;
 	pdev->poll = psxpad_spi_poll;
-	pdev->poll_interval = PSXPAD_DEFAULT_INTERVAL;
-	pdev->poll_interval_min = PSXPAD_DEFAULT_INTERVAL_MIN;
-	pdev->poll_interval_max = PSXPAD_DEFAULT_INTERVAL_MAX;
+	/* poll interval is about 60fps */
+	pdev->poll_interval = 16;
+	pdev->poll_interval_min = 8;
+	pdev->poll_interval_max = 32;
 
 	/* input device settings */
 	idev = pdev->input;
@@ -465,8 +433,9 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	/* force feedback */
 	err = psxpad_spi_init_ff(pad);
 	if (err) {
+		dev_err(&spi->dev, "psxpad-spi: probe: failed init ff!!\n");
 		err = -ENOMEM;
-		goto err_free_mem;
+		goto err_free_mem2;
 	}
 
 	/* SPI settings */
@@ -480,23 +449,21 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	/* pad settings */
 	psxpad_setmotorlevel(pad, 0, 0);
 
-	/* register input pool device */
+	/* register input poll device */
 	err = input_register_polled_device(pdev);
 	if (err) {
 		dev_err(&spi->dev, "psxpad-spi: probe: failed register!!\n");
-		input_free_polled_device(pdev);
-		goto err_free_mem;
+		goto err_free_mem2;
 	}
 
 	pm_runtime_enable(&spi->dev);
 
 	return 0;
 
- err_free_mem:
-	if (pdev) {
-		psxpad_spi_deinit_ff(pad);
-		input_free_polled_device(pdev);
-	}
+ err_free_mem2:
+	input_free_polled_device(pdev);
+
+ err_free_mem1:
 	devm_kfree(&spi->dev, pad);
 
 	return err;
@@ -513,16 +480,7 @@ static int __maybe_unused psxpad_spi_suspend(struct device *dev)
 	struct spi_device *spi = to_spi_device(dev);
 	struct psxpad *pad = spi_get_drvdata(spi);
 
-	pad->sus_analog_mode = pad->analog_mode;
-	pad->sus_mode_lock = pad->mode_lock;
-	pad->sus_motor1enable = pad->motor1enable;
-	pad->sus_motor2enable = pad->motor2enable;
-	pad->sus_motor1level = pad->motor1level;
-	pad->sus_motor2level = pad->motor2level;
-
-	psxpad_setadmode(pad, false, false);
 	psxpad_setmotorlevel(pad, 0, 0);
-	psxpad_setenablemotor(pad, false, false);
 
 	return 0;
 }
@@ -532,9 +490,7 @@ static int __maybe_unused psxpad_spi_resume(struct device *dev)
 	struct spi_device *spi = to_spi_device(dev);
 	struct psxpad *pad = spi_get_drvdata(spi);
 
-	psxpad_setadmode(pad, pad->sus_analog_mode, pad->sus_mode_lock);
-	psxpad_setmotorlevel(pad, pad->sus_motor1enable, pad->sus_motor2enable);
-	psxpad_setenablemotor(pad, pad->sus_motor1level, pad->sus_motor2level);
+	psxpad_setadmode(pad, pad->analog_mode, pad->mode_lock);
 
 	return 0;
 }
@@ -559,6 +515,6 @@ static struct spi_driver psxpad_spi_driver = {
 
 module_spi_driver(psxpad_spi_driver);
 
-MODULE_AUTHOR("AZO <typesylph@gmail.com>");
+MODULE_AUTHOR("Tomohiro Yoshidomi <sylph23k@gmail.com>");
 MODULE_DESCRIPTION("PSX (Play Station 1/2) pad with SPI Bus Driver");
 MODULE_LICENSE("GPL");
