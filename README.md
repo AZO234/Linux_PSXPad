@@ -1,2 +1,2 @@
 # Linux_PSXPad
-souece for Linux
+PlayStation 1/2 joypads via SPI interface Driver source for Linux
