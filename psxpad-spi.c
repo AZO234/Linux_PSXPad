@@ -134,12 +134,49 @@ static void psxpad_set_motor_level(
 	pad->motor1level = motor1level ? 0xFF : 0x00;
 	pad->motor2level = REVERSE_BIT(motor2level);
 }
+
+static int psxpad_spi_ff(
+	struct input_dev *idev, void *data, struct ff_effect *effect)
+{
+	struct input_polled_dev *pdev = input_get_drvdata(idev);
+	struct psxpad *pad = pdev->private;
+
+	switch (effect->type) {
+	case FF_RUMBLE:
+		psxpad_set_motor_level(pad,
+			(effect->u.rumble.weak_magnitude >> 8) & 0xFFU,
+			(effect->u.rumble.strong_magnitude >> 8) & 0xFFU);
+		break;
+	}
+
+	return 0;
+}
+
+static int psxpad_spi_init_ff(struct psxpad *pad)
+{
+	int err;
+
+	input_set_capability(pad->idev, EV_FF, FF_RUMBLE);
+	err = input_ff_create_memless(pad->idev, NULL, psxpad_spi_ff);
+	if (err) {
+		dev_err(&pad->spi->dev,
+			"%s: failed to ff alloc mode: %d\n",
+			__func__, err);
+	}
+
+	return err;
+}
 #else	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
 static void psxpad_setenablemotor(
 	struct psxpad *pad, bool motor1enable, bool motor2enable) { }
 
 static void psxpad_set_motor_level(
 	struct psxpad *pad, u8 motor1level, u8 motor2level) { }
+
+static inline int psxpad_spi_init_ff(struct psxpad *pad)
+{
+	return 0;
+}
 #endif	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
 
 static void psxpad_spi_poll_open(struct input_polled_dev *pdev)
@@ -265,45 +302,6 @@ static void psxpad_spi_poll(struct input_polled_dev *pdev)
 	input_sync(pad->idev);
 }
 
-#ifdef CONFIG_JOYSTICK_PSXPAD_SPI_FF
-static int psxpad_spi_ff(
-	struct input_dev *idev, void *data, struct ff_effect *effect)
-{
-	struct input_polled_dev *pdev = input_get_drvdata(idev);
-	struct psxpad *pad = pdev->private;
-
-	switch (effect->type) {
-	case FF_RUMBLE:
-		psxpad_set_motor_level(pad,
-			(effect->u.rumble.weak_magnitude >> 8) & 0xFFU,
-			(effect->u.rumble.strong_magnitude >> 8) & 0xFFU);
-		break;
-	}
-
-	return 0;
-}
-
-static int psxpad_spi_init_ff(struct psxpad *pad)
-{
-	int err;
-
-	input_set_capability(pad->idev, EV_FF, FF_RUMBLE);
-	err = input_ff_create_memless(pad->idev, NULL, psxpad_spi_ff);
-	if (err) {
-		dev_err(&pad->spi->dev,
-			"%s: failed to ff alloc mode: %d\n",
-			__func__, err);
-	}
-
-	return err;
-}
-#else	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
-static inline int psxpad_spi_init_ff(struct psxpad *pad)
-{
-	return 0;
-}
-#endif	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
-
 static int psxpad_spi_probe(struct spi_device *spi)
 {
 	struct psxpad *pad;
@@ -409,12 +407,7 @@ static int __maybe_unused psxpad_spi_suspend(struct device *dev)
 	return 0;
 }
 
-static int __maybe_unused psxpad_spi_resume(struct device *dev)
-{
-	return 0;
-}
-
-static SIMPLE_DEV_PM_OPS(psxpad_spi_pm, psxpad_spi_suspend, psxpad_spi_resume);
+static SIMPLE_DEV_PM_OPS(psxpad_spi_pm, psxpad_spi_suspend, NULL);
 
 static const struct spi_device_id psxpad_spi_id[] = {
 	{ "psxpad-spi", 0 },
