@@ -35,7 +35,8 @@
 
 /* PlayStation 1/2 joypad command and response are LSBFIRST. */
 
-/*	0x01, 0x42, 0x00, 0x00, 0x00,
+/*
+ *	0x01, 0x42, 0x00, 0x00, 0x00,
  *	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
  *	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
  */
@@ -60,7 +61,6 @@ static const u8 PSX_CMD_ENABLE_MOTOR[]	= {
 struct psxpad {
 	struct spi_device *spi;
 	struct input_polled_dev *pdev;
-	struct input_dev *idev;
 	char phys[0x20];
 	bool motor1enable;
 	bool motor2enable;
@@ -91,8 +91,8 @@ static int psxpad_command(struct psxpad *pad, const u8 sendcmdlen)
 }
 
 #ifdef CONFIG_JOYSTICK_PSXPAD_SPI_FF
-static void psxpad_setenablemotor(
-	struct psxpad *pad, bool motor1enable, bool motor2enable)
+static void psxpad_control_motor(struct psxpad *pad,
+	bool motor1enable, bool motor2enable)
 {
 	int err;
 
@@ -128,15 +128,15 @@ static void psxpad_setenablemotor(
 	}
 }
 
-static void psxpad_set_motor_level(
-	struct psxpad *pad, u8 motor1level, u8 motor2level)
+static void psxpad_set_motor_level(struct psxpad *pad,
+	u8 motor1level, u8 motor2level)
 {
 	pad->motor1level = motor1level ? 0xFF : 0x00;
 	pad->motor2level = REVERSE_BIT(motor2level);
 }
 
-static int psxpad_spi_ff(
-	struct input_dev *idev, void *data, struct ff_effect *effect)
+static int psxpad_spi_play_effect(struct input_dev *idev,
+	void *data, struct ff_effect *effect)
 {
 	struct input_polled_dev *pdev = input_get_drvdata(idev);
 	struct psxpad *pad = pdev->private;
@@ -156,22 +156,30 @@ static int psxpad_spi_init_ff(struct psxpad *pad)
 {
 	int err;
 
-	input_set_capability(pad->idev, EV_FF, FF_RUMBLE);
-	err = input_ff_create_memless(pad->idev, NULL, psxpad_spi_ff);
+	input_set_capability(pad->pdev->input, EV_FF, FF_RUMBLE);
+
+	err = input_ff_create_memless(pad->pdev->input, NULL,
+		 psxpad_spi_play_effect);
 	if (err) {
 		dev_err(&pad->spi->dev,
-			"%s: failed to ff alloc mode: %d\n",
-			__func__, err);
+			"input_ff_create_memless() failed: %d\n", err);
+		return err;
 	}
 
-	return err;
+	return 0;
 }
-#else	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
-static void psxpad_setenablemotor(
-	struct psxpad *pad, bool motor1enable, bool motor2enable) { }
 
-static void psxpad_set_motor_level(
-	struct psxpad *pad, u8 motor1level, u8 motor2level) { }
+#else	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
+
+static void psxpad_control_motor(struct psxpad *pad,
+	bool motor1enable, bool motor2enable)
+{
+}
+
+static void psxpad_set_motor_level(struct psxpad *pad,
+	u8 motor1level, u8 motor2level)
+{
+}
 
 static inline int psxpad_spi_init_ff(struct psxpad *pad)
 {
@@ -196,9 +204,11 @@ static void psxpad_spi_poll_close(struct input_polled_dev *pdev)
 static void psxpad_spi_poll(struct input_polled_dev *pdev)
 {
 	struct psxpad *pad = pdev->private;
+	struct input_dev *input = pdev->input;
+	u8 b_rsp3, b_rsp4;
 	int err;
 
-	psxpad_setenablemotor(pad, true, true);
+	psxpad_control_motor(pad, true, true);
 
 	memcpy(pad->sendbuf, PSX_CMD_POLL, sizeof(PSX_CMD_POLL));
 	pad->sendbuf[3] = pad->motor1enable ? pad->motor1level : 0x00;
@@ -206,100 +216,67 @@ static void psxpad_spi_poll(struct input_polled_dev *pdev)
 	err = psxpad_command(pad, sizeof(PSX_CMD_POLL));
 	if (err) {
 		dev_err(&pad->spi->dev,
-			"%s: failed to poll cmd mode: %d\n",
-			__func__, err);
+			"%s: poll command failed mode: %d\n", __func__, err);
 		return;
 	}
 
 	switch (pad->response[1]) {
 	case 0xCE:	/* 0x73 : analog 1 */
-		input_report_abs(pad->idev,
-			ABS_X,		REVERSE_BIT(pad->response[7]));
-		input_report_abs(pad->idev,
-			ABS_Y,		REVERSE_BIT(pad->response[8]));
-		input_report_abs(pad->idev,
-			ABS_RX,		REVERSE_BIT(pad->response[5]));
-		input_report_abs(pad->idev,
-			ABS_RY,		REVERSE_BIT(pad->response[6]));
-		input_report_key(pad->idev,
-			BTN_DPAD_UP,	!(pad->response[3] & BIT(3)));
-		input_report_key(pad->idev,
-			BTN_DPAD_DOWN,	!(pad->response[3] & BIT(1)));
-		input_report_key(pad->idev,
-			BTN_DPAD_LEFT,	!(pad->response[3] & BIT(0)));
-		input_report_key(pad->idev,
-			BTN_DPAD_RIGHT,	!(pad->response[3] & BIT(2)));
-		input_report_key(pad->idev,
-			BTN_X,		!(pad->response[4] & BIT(3)));
-		input_report_key(pad->idev,
-			BTN_A,		!(pad->response[4] & BIT(2)));
-		input_report_key(pad->idev,
-			BTN_B,		!(pad->response[4] & BIT(1)));
-		input_report_key(pad->idev,
-			BTN_Y,		!(pad->response[4] & BIT(0)));
-		input_report_key(pad->idev,
-			BTN_TL,		!(pad->response[4] & BIT(5)));
-		input_report_key(pad->idev,
-			BTN_TR,		!(pad->response[4] & BIT(4)));
-		input_report_key(pad->idev,
-			BTN_TL2,	!(pad->response[4] & BIT(7)));
-		input_report_key(pad->idev,
-			BTN_TR2,	!(pad->response[4] & BIT(6)));
-		input_report_key(pad->idev,
-			BTN_THUMBL,	!(pad->response[3] & BIT(6)));
-		input_report_key(pad->idev,
-			BTN_THUMBR,	!(pad->response[3] & BIT(5)));
-		input_report_key(pad->idev,
-			BTN_SELECT,	!(pad->response[3] & BIT(7)));
-		input_report_key(pad->idev,
-			BTN_START,	!(pad->response[3] & BIT(4)));
+		/* button data is inverted */
+		b_rsp3 = ~pad->response[3];
+		b_rsp4 = ~pad->response[4];
+
+		input_report_abs(input, ABS_X, REVERSE_BIT(pad->response[7]));
+		input_report_abs(input, ABS_Y, REVERSE_BIT(pad->response[8]));
+		input_report_abs(input, ABS_RX, REVERSE_BIT(pad->response[5]));
+		input_report_abs(input, ABS_RY, REVERSE_BIT(pad->response[6]));
+		input_report_key(input, BTN_DPAD_UP, b_rsp3 & BIT(3));
+		input_report_key(input, BTN_DPAD_DOWN, b_rsp3 & BIT(1));
+		input_report_key(input, BTN_DPAD_LEFT, b_rsp3 & BIT(0));
+		input_report_key(input, BTN_DPAD_RIGHT, b_rsp3 & BIT(2));
+		input_report_key(input, BTN_X, b_rsp4 & BIT(3));
+		input_report_key(input, BTN_A, b_rsp4 & BIT(2));
+		input_report_key(input, BTN_B, b_rsp4 & BIT(1));
+		input_report_key(input, BTN_Y, b_rsp4 & BIT(0));
+		input_report_key(input, BTN_TL, b_rsp4 & BIT(5));
+		input_report_key(input, BTN_TR, b_rsp4 & BIT(4));
+		input_report_key(input, BTN_TL2, b_rsp4 & BIT(7));
+		input_report_key(input, BTN_TR2, b_rsp4 & BIT(6));
+		input_report_key(input, BTN_THUMBL, b_rsp3 & BIT(6));
+		input_report_key(input, BTN_THUMBR, b_rsp3 & BIT(5));
+		input_report_key(input, BTN_SELECT, b_rsp3 & BIT(7));
+		input_report_key(input, BTN_START, b_rsp3 & BIT(4));
 		break;
 
 	case 0x82:	/* 0x41 : digital */
-		input_report_abs(pad->idev,
-			ABS_X,		0x80);
-		input_report_abs(pad->idev,
-			ABS_Y,		0x80);
-		input_report_abs(pad->idev,
-			ABS_RX,		0x80);
-		input_report_abs(pad->idev,
-			ABS_RY,		0x80);
-		input_report_key(pad->idev,
-			BTN_DPAD_UP,	!(pad->response[3] & BIT(3)));
-		input_report_key(pad->idev,
-			BTN_DPAD_DOWN,	!(pad->response[3] & BIT(1)));
-		input_report_key(pad->idev,
-			BTN_DPAD_LEFT,	!(pad->response[3] & BIT(0)));
-		input_report_key(pad->idev,
-			BTN_DPAD_RIGHT,	!(pad->response[3] & BIT(2)));
-		input_report_key(pad->idev,
-			BTN_X,		!(pad->response[4] & BIT(3)));
-		input_report_key(pad->idev,
-			BTN_A,		!(pad->response[4] & BIT(2)));
-		input_report_key(pad->idev,
-			BTN_B,		!(pad->response[4] & BIT(1)));
-		input_report_key(pad->idev,
-			BTN_Y,		!(pad->response[4] & BIT(0)));
-		input_report_key(pad->idev,
-			BTN_TL,		!(pad->response[4] & BIT(5)));
-		input_report_key(pad->idev,
-			BTN_TR,		!(pad->response[4] & BIT(4)));
-		input_report_key(pad->idev,
-			BTN_TL2,	!(pad->response[4] & BIT(7)));
-		input_report_key(pad->idev,
-			BTN_TR2,	!(pad->response[4] & BIT(6)));
-		input_report_key(pad->idev,
-			BTN_THUMBL,	false);
-		input_report_key(pad->idev,
-			BTN_THUMBR,	false);
-		input_report_key(pad->idev,
-			BTN_SELECT,	!(pad->response[3] & BIT(7)));
-		input_report_key(pad->idev,
-			BTN_START,	!(pad->response[3] & BIT(4)));
+		/* button data is inverted */
+		b_rsp3 = ~pad->response[3];
+		b_rsp4 = ~pad->response[4];
+
+		input_report_abs(input, ABS_X, 0x80);
+		input_report_abs(input, ABS_Y, 0x80);
+		input_report_abs(input, ABS_RX, 0x80);
+		input_report_abs(input, ABS_RY, 0x80);
+		input_report_key(input, BTN_DPAD_UP, b_rsp3 & BIT(3));
+		input_report_key(input, BTN_DPAD_DOWN, b_rsp3 & BIT(1));
+		input_report_key(input, BTN_DPAD_LEFT, b_rsp3 & BIT(0));
+		input_report_key(input, BTN_DPAD_RIGHT, b_rsp3 & BIT(2));
+		input_report_key(input, BTN_X, b_rsp4 & BIT(3));
+		input_report_key(input, BTN_A, b_rsp4 & BIT(2));
+		input_report_key(input, BTN_B, b_rsp4 & BIT(1));
+		input_report_key(input, BTN_Y, b_rsp4 & BIT(0));
+		input_report_key(input, BTN_TL, b_rsp4 & BIT(5));
+		input_report_key(input, BTN_TR, b_rsp4 & BIT(4));
+		input_report_key(input, BTN_TL2, b_rsp4 & BIT(7));
+		input_report_key(input, BTN_TR2, b_rsp4 & BIT(6));
+		input_report_key(input, BTN_THUMBL, false);
+		input_report_key(input, BTN_THUMBR, false);
+		input_report_key(input, BTN_SELECT, b_rsp3 & BIT(7));
+		input_report_key(input, BTN_START, b_rsp3 & BIT(4));
 		break;
 	}
 
-	input_sync(pad->idev);
+	input_sync(input);
 }
 
 static int psxpad_spi_probe(struct spi_device *spi)
@@ -312,19 +289,17 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	pad = devm_kzalloc(&spi->dev, sizeof(struct psxpad), GFP_KERNEL);
 	if (!pad)
 		return -ENOMEM;
+
 	pdev = input_allocate_polled_device();
 	if (!pdev) {
-		dev_err(&spi->dev,
-			"%s: failed to pdev alloc\n",
-			__func__);
+		dev_err(&spi->dev, "failed to allocate input device\n");
 		return -ENOMEM;
 	}
 
 	/* input poll device settings */
 	pad->pdev = pdev;
 	pad->spi = spi;
-	pad->motor1enable = false;
-	pad->motor2enable = false;
+
 	pdev->private = pad;
 	pdev->open = psxpad_spi_poll_open;
 	pdev->close = psxpad_spi_poll_close;
@@ -336,41 +311,35 @@ static int psxpad_spi_probe(struct spi_device *spi)
 
 	/* input device settings */
 	idev = pdev->input;
-	pad->idev = idev;
 	idev->name = "PlayStation 1/2 joypad";
 	snprintf(pad->phys, sizeof(pad->phys), "%s/input", dev_name(&spi->dev));
 	idev->id.bustype = BUS_SPI;
 
 	/* key/value map settings */
-	input_set_abs_params(idev, ABS_X,	0, 255, 0, 0);
-	input_set_abs_params(idev, ABS_Y,	0, 255, 0, 0);
-	input_set_abs_params(idev, ABS_RX,	0, 255, 0, 0);
-	input_set_abs_params(idev, ABS_RY,	0, 255, 0, 0);
-	input_set_capability(idev, EV_KEY,	BTN_DPAD_UP);
-	input_set_capability(idev, EV_KEY,	BTN_DPAD_DOWN);
-	input_set_capability(idev, EV_KEY,	BTN_DPAD_LEFT);
-	input_set_capability(idev, EV_KEY,	BTN_DPAD_RIGHT);
-	input_set_capability(idev, EV_KEY,	BTN_A);
-	input_set_capability(idev, EV_KEY,	BTN_B);
-	input_set_capability(idev, EV_KEY,	BTN_X);
-	input_set_capability(idev, EV_KEY,	BTN_Y);
-	input_set_capability(idev, EV_KEY,	BTN_TL);
-	input_set_capability(idev, EV_KEY,	BTN_TR);
-	input_set_capability(idev, EV_KEY,	BTN_TL2);
-	input_set_capability(idev, EV_KEY,	BTN_TR2);
-	input_set_capability(idev, EV_KEY,	BTN_THUMBL);
-	input_set_capability(idev, EV_KEY,	BTN_THUMBR);
-	input_set_capability(idev, EV_KEY,	BTN_SELECT);
-	input_set_capability(idev, EV_KEY,	BTN_START);
+	input_set_abs_params(idev, ABS_X, 0, 255, 0, 0);
+	input_set_abs_params(idev, ABS_Y, 0, 255, 0, 0);
+	input_set_abs_params(idev, ABS_RX, 0, 255, 0, 0);
+	input_set_abs_params(idev, ABS_RY, 0, 255, 0, 0);
+	input_set_capability(idev, EV_KEY, BTN_DPAD_UP);
+	input_set_capability(idev, EV_KEY, BTN_DPAD_DOWN);
+	input_set_capability(idev, EV_KEY, BTN_DPAD_LEFT);
+	input_set_capability(idev, EV_KEY, BTN_DPAD_RIGHT);
+	input_set_capability(idev, EV_KEY, BTN_A);
+	input_set_capability(idev, EV_KEY, BTN_B);
+	input_set_capability(idev, EV_KEY, BTN_X);
+	input_set_capability(idev, EV_KEY, BTN_Y);
+	input_set_capability(idev, EV_KEY, BTN_TL);
+	input_set_capability(idev, EV_KEY, BTN_TR);
+	input_set_capability(idev, EV_KEY, BTN_TL2);
+	input_set_capability(idev, EV_KEY, BTN_TR2);
+	input_set_capability(idev, EV_KEY, BTN_THUMBL);
+	input_set_capability(idev, EV_KEY, BTN_THUMBR);
+	input_set_capability(idev, EV_KEY, BTN_SELECT);
+	input_set_capability(idev, EV_KEY, BTN_START);
 
-	/* force feedback */
 	err = psxpad_spi_init_ff(pad);
-	if (err) {
-		dev_err(&spi->dev,
-			"%s: failed to init ff mode: %d\n",
-			__func__, err);
+	if (err)
 		return err;
-	}
 
 	/* SPI settings */
 	spi->mode = SPI_MODE_3;
@@ -387,8 +356,7 @@ static int psxpad_spi_probe(struct spi_device *spi)
 	err = input_register_polled_device(pdev);
 	if (err) {
 		dev_err(&spi->dev,
-			"%s: failed to register input poll device: %d\n",
-			__func__, err);
+			"failed to register input poll device: %d\n", err);
 		return err;
 	}
 
