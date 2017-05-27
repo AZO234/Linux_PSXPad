@@ -92,7 +92,7 @@ static int psxpad_command(struct psxpad *pad, const u8 sendcmdlen)
 
 #ifdef CONFIG_JOYSTICK_PSXPAD_SPI_FF
 static void psxpad_control_motor(struct psxpad *pad,
-	bool motor1enable, bool motor2enable)
+				 bool motor1enable, bool motor2enable)
 {
 	int err;
 
@@ -107,8 +107,9 @@ static void psxpad_control_motor(struct psxpad *pad,
 			__func__, err);
 		return;
 	}
-	memcpy(pad->sendbuf,
-		PSX_CMD_ENABLE_MOTOR, sizeof(PSX_CMD_ENABLE_MOTOR));
+
+	memcpy(pad->sendbuf, PSX_CMD_ENABLE_MOTOR,
+	       sizeof(PSX_CMD_ENABLE_MOTOR));
 	pad->sendbuf[3] = pad->motor1enable ? 0x00 : 0xFF;
 	pad->sendbuf[4] = pad->motor2enable ? 0x80 : 0xFF;
 	err = psxpad_command(pad, sizeof(PSX_CMD_ENABLE_MOTOR));
@@ -118,6 +119,7 @@ static void psxpad_control_motor(struct psxpad *pad,
 			__func__, err);
 		return;
 	}
+
 	memcpy(pad->sendbuf, PSX_CMD_EXIT_CFG, sizeof(PSX_CMD_EXIT_CFG));
 	err = psxpad_command(pad, sizeof(PSX_CMD_EXIT_CFG));
 	if (err) {
@@ -129,14 +131,14 @@ static void psxpad_control_motor(struct psxpad *pad,
 }
 
 static void psxpad_set_motor_level(struct psxpad *pad,
-	u8 motor1level, u8 motor2level)
+				   u8 motor1level, u8 motor2level)
 {
 	pad->motor1level = motor1level ? 0xFF : 0x00;
 	pad->motor2level = REVERSE_BIT(motor2level);
 }
 
 static int psxpad_spi_play_effect(struct input_dev *idev,
-	void *data, struct ff_effect *effect)
+				  void *data, struct ff_effect *effect)
 {
 	struct input_polled_dev *pdev = input_get_drvdata(idev);
 	struct psxpad *pad = pdev->private;
@@ -159,7 +161,7 @@ static int psxpad_spi_init_ff(struct psxpad *pad)
 	input_set_capability(pad->pdev->input, EV_FF, FF_RUMBLE);
 
 	err = input_ff_create_memless(pad->pdev->input, NULL,
-		 psxpad_spi_play_effect);
+				      psxpad_spi_play_effect);
 	if (err) {
 		dev_err(&pad->spi->dev,
 			"input_ff_create_memless() failed: %d\n", err);
@@ -172,12 +174,12 @@ static int psxpad_spi_init_ff(struct psxpad *pad)
 #else	/* CONFIG_JOYSTICK_PSXPAD_SPI_FF */
 
 static void psxpad_control_motor(struct psxpad *pad,
-	bool motor1enable, bool motor2enable)
+				 bool motor1enable, bool motor2enable)
 {
 }
 
 static void psxpad_set_motor_level(struct psxpad *pad,
-	u8 motor1level, u8 motor2level)
+				   u8 motor1level, u8 motor2level)
 {
 }
 
